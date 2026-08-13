@@ -4,10 +4,11 @@ import { Platform, Surface } from "@prisma/client";
 import { describe, expect, it } from "vitest";
 import { fakeAdapter } from "../fake";
 import { allAdapters } from "../index";
+import { threadsAdapter } from "../threads";
 import { adapterContract } from "./contract";
 
 // 已掛合約測試的平台（新增 adapter 時：先在下方呼叫 adapterContract，再把平台加進來）
-const PLATFORMS_UNDER_CONTRACT: Platform[] = [Platform.FAKE];
+const PLATFORMS_UNDER_CONTRACT: Platform[] = [Platform.FAKE, Platform.THREADS];
 
 // ── 1. FAKE（架構驗證）──
 adapterContract(fakeAdapter, {
@@ -33,7 +34,25 @@ adapterContract(fakeAdapter, {
   }),
 });
 
-// ── 之後依序在這裡掛上：THREADS → FB → IG → X → MEDIUM → LINE_OA ──
+// ── 2. THREADS ──
+adapterContract(threadsAdapter, {
+  validPayload: () => ({
+    surface: Surface.FEED,
+    body: "合約測試貼文（Threads）",
+    assets: [],
+  }),
+  fakeAccount: () => ({
+    id: "contract-test-threads",
+    platform: Platform.THREADS,
+    platformAccountId: "1234567890",
+    displayName: "合約測試 Threads 帳號",
+    accessToken: "threads-token-must-not-leak",
+    meta: { username: "contract_test" },
+  }),
+  // 失敗模擬用預設的 fetch 500 stub：publish 第一步（額度查詢）就會拿到 500
+});
+
+// ── 之後依序在這裡掛上：FB → IG → X → MEDIUM → LINE_OA ──
 
 describe("adapter registry 守門", () => {
   it(`registry 內每個 adapter 都掛了合約測試（目前：${PLATFORMS_UNDER_CONTRACT.join("、")}）`, () => {

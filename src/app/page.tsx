@@ -131,9 +131,19 @@ export default async function Home() {
         </section>
 
         <section>
-          <h2 className="text-sm font-semibold uppercase tracking-wide text-zinc-500 dark:text-zinc-400">
-            已連結帳號
-          </h2>
+          <div className="flex items-center justify-between">
+            <h2 className="text-sm font-semibold uppercase tracking-wide text-zinc-500 dark:text-zinc-400">
+              已連結帳號
+            </h2>
+            {/* OAuth 起點必須整頁導航（不能 Link prefetch API 路由） */}
+            {/* eslint-disable-next-line @next/next/no-html-link-for-pages */}
+            <a
+              href="/api/accounts/connect/threads"
+              className="text-xs text-blue-600 underline hover:text-blue-800 dark:text-blue-400 dark:hover:text-blue-300"
+            >
+              連結 Threads →
+            </a>
+          </div>
           {data.ok && data.accounts.length > 0 ? (
             <ul className="mt-3 flex flex-col gap-2">
               {data.accounts.map((a) => (
@@ -153,7 +163,8 @@ export default async function Home() {
             </ul>
           ) : (
             <p className="mt-3 text-sm text-zinc-500 dark:text-zinc-400">
-              尚無帳號。第一個 adapter（LINE OA）完成後在此連結。
+              尚無帳號。填好 .env 的 THREADS_APP_ID / THREADS_APP_SECRET 後，點右上「連結
+              Threads」完成授權。
             </p>
           )}
         </section>

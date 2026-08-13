@@ -16,6 +16,11 @@ export interface OAuthStatePayload {
 
 const DEFAULT_TTL_SECONDS = 600;
 
+// connect 時把 state 的 nonce 寫進這個 HttpOnly cookie，callback 驗證
+// state.nonce === cookie 才放行——把 OAuth 流程綁定到發起授權的同一個瀏覽器，
+// 擋掉「攻擊者鑄造自己的 state 誘騙受害者完成授權」的跨租戶帳號劫持。
+export const OAUTH_NONCE_COOKIE = "ch_oauth_nonce";
+
 function getSecret(): string {
   const secret = process.env.AUTH_SECRET;
   if (!secret) throw new Error("AUTH_SECRET 未設定（OAuth state 簽章需要）");
@@ -27,14 +32,17 @@ function hmac(data: string): Buffer {
 }
 
 export function signOAuthState(
-  input: { userId: string; platform?: string; redirectTo?: string },
+  input: { userId: string; platform?: string; redirectTo?: string; nonce?: string },
   ttlSeconds: number = DEFAULT_TTL_SECONDS
 ): string {
   if (!input.userId) throw new Error("OAuth state 必須帶 userId");
   const now = Math.floor(Date.now() / 1000);
   const payload: OAuthStatePayload = {
-    ...input,
-    nonce: randomBytes(12).toString("base64url"),
+    userId: input.userId,
+    platform: input.platform,
+    redirectTo: input.redirectTo,
+    // caller 可傳入 nonce（同時寫進 cookie 做 double-submit）；不傳則自動產生
+    nonce: input.nonce ?? randomBytes(16).toString("base64url"),
     iat: now,
     exp: now + ttlSeconds,
   };

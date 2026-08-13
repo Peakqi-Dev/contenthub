@@ -1,5 +1,6 @@
 import { Platform } from "@prisma/client";
 import { fakeAdapter } from "./fake";
+import { threadsAdapter } from "./threads";
 import type { PlatformAdapter, PlatformCapabilities } from "./types";
 
 // Registry：platform → adapter（規格 §1 決策三）
@@ -7,7 +8,7 @@ import type { PlatformAdapter, PlatformCapabilities } from "./types";
 //
 // 實作順序（規格 v1.1，2026-08-14 二次修訂；一次只做一個，其他檔案不動）：
 //   1. FAKE（架構驗證：job 狀態機、重試、冪等性）✅
-//   2. THREADS
+//   2. THREADS ✅
 //   3. meta/shared.ts + FACEBOOK_PAGE
 //   4. INSTAGRAM（FEED / STORY / REEL）
 //   5. X
@@ -15,6 +16,7 @@ import type { PlatformAdapter, PlatformCapabilities } from "./types";
 //   7. LINE_OA
 const registry: Partial<Record<Platform, PlatformAdapter>> = {
   [Platform.FAKE]: fakeAdapter,
+  [Platform.THREADS]: threadsAdapter,
 };
 
 export function getAdapter(platform: Platform): PlatformAdapter {

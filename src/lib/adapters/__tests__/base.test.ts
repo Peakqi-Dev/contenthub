@@ -113,6 +113,15 @@ describe("normalizeError", () => {
     expect(normalizeError(new TypeError("fetch failed")).code).toBe("NETWORK_ERROR");
   });
 
+  it("fetch 逾時（AbortSignal.timeout 的 DOMException）→ NETWORK_ERROR、可重試", () => {
+    const timeout = new DOMException("The operation was aborted due to timeout", "TimeoutError");
+    const e = normalizeError(timeout);
+    expect(e.code).toBe("NETWORK_ERROR");
+    expect(e.retryable).toBe(true);
+    // AbortError（手動中止）同理
+    expect(normalizeError(new DOMException("aborted", "AbortError")).retryable).toBe(true);
+  });
+
   it("PublishError 原樣通過", () => {
     const original = new PublishError("CUSTOM", "x", false);
     expect(normalizeError(original)).toBe(original);

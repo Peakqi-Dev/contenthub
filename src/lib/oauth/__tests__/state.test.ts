@@ -48,4 +48,9 @@ describe("OAuth state 簽章（規格追加 §4）", () => {
   it("同 payload 兩次簽出的 state 不同（nonce）", () => {
     expect(signOAuthState({ userId: "u" })).not.toBe(signOAuthState({ userId: "u" }));
   });
+
+  it("傳入的 nonce 會被保留（供 connect 寫 cookie 做 double-submit）", () => {
+    const state = signOAuthState({ userId: "u", nonce: "fixed-nonce-123" });
+    expect(verifyOAuthState(state).nonce).toBe("fixed-nonce-123");
+  });
 });

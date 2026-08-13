@@ -13,7 +13,8 @@
     "db:migrate": "prisma migrate deploy",
     "db:studio": "prisma studio",
     "test": "vitest run",
-    "smoke:fake": "tsx --env-file=.env scripts/smoke-fake.ts"
+    "smoke:fake": "tsx --env-file=.env scripts/smoke-fake.ts",
+    "smoke:threads": "tsx --env-file=.env scripts/smoke-threads.ts"
   },
   "dependencies": {
     "@auth/prisma-adapter": "^2.11.3",

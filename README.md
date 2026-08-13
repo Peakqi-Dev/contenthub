@@ -12,12 +12,22 @@
 Adapter 實作順序（v1.1，2026-08-14 二次修訂；一次只做一個）：
 
 1. **Fake** — 架構驗證：不打外網，驗 job 狀態機、重試邏輯、冪等性 ✅
-2. **Threads** — Meta 家族最小樣本
+2. **Threads** — Meta 家族最小樣本 ✅（實發驗收待 Threads App 憑證，見下）
 3. **meta/shared.ts + Facebook 粉專** — 容器模式 + token 刷新
 4. **Instagram** — FEED / STORY / REEL，複用 shared.ts
 5. **X** — 含 linkInComment 成本開關
 6. **Medium** — ASSISTED（自家站發布 → Medium Import）
 7. **LINE OA** — 推播計費，最後實作
+
+### Threads 連結步驟（一次性）
+
+1. [developers.facebook.com](https://developers.facebook.com) 建 Meta App，選 **Threads use case**；把自己的 Threads 帳號加為 **Threads Tester** 並在 Threads App 內接受邀請（自用不需 App Review）。
+2. App Dashboard → Use cases → Customize → Settings 登記 redirect URI：`http://localhost:3000/api/accounts/callback/threads`。
+3. `.env` 填 `THREADS_APP_ID` / `THREADS_APP_SECRET`（**Threads 那組**，不是 Facebook 的）。
+4. `npm run dev` → 登入 → 首頁點「連結 Threads」完成授權（長效 token 60 天，加密入庫）。
+5. `npm run smoke:threads` — 會真的發一篇貼文到你的 Threads，這是 adapter 的完成定義（修訂 6）。
+
+Threads adapter 重點：發布前查 `threads_publishing_limit` 額度；container 兩段式（建立 → 輪詢 status → publish → 取 permalink）；**container 建立後的失敗一律不自動重試**（結果不明時重試會重複發文，錯誤訊息附 container id 供人工查證）。
 
 每個 adapter 的工作紀律（v1.1 修訂 6）：開工前先讀該平台**官方文件**確認端點與參數；完成的定義不是測試綠燈，而是 `scripts/smoke-{platform}.ts` 真的在自己的帳號發出一則貼文。
 

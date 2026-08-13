@@ -18,6 +18,15 @@ export class PublishError extends Error {
 export function normalizeError(err: unknown): PublishError {
   if (err instanceof PublishError) return err;
 
+  // fetch 逾時 / 中止：AbortSignal.timeout() reject 的是 DOMException
+  // （name=TimeoutError / AbortError），沒有 status、也不匹配下方的訊息正則，
+  // 若不特判會落到 UNKNOWN/non-retryable，架空「逾時可重試」的預期。
+  const name = (err as { name?: unknown })?.name;
+  if (name === "TimeoutError" || name === "AbortError") {
+    const msg = err instanceof Error ? err.message : "請求逾時或被中止";
+    return new PublishError("NETWORK_ERROR", `網路逾時：${msg}`, true, err);
+  }
+
   // XRPC / fetch 類錯誤通常帶 status
   const status =
     typeof err === "object" && err !== null && "status" in err
