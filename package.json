@@ -12,10 +12,9 @@
     "db:generate": "prisma generate",
     "db:migrate": "prisma migrate deploy",
     "db:studio": "prisma studio",
-    "connect:bluesky": "tsx --env-file=.env scripts/connect-bluesky.ts"
+    "test": "vitest run"
   },
   "dependencies": {
-    "@atproto/api": "^0.20.40",
     "@prisma/client": "^6.19.3",
     "next": "15.5.23",
     "react": "19.1.0",
@@ -32,6 +31,7 @@
     "prisma": "^6.19.3",
     "tailwindcss": "^4",
     "tsx": "^4.23.12",
-    "typescript": "^5"
+    "typescript": "^5",
+    "vitest": "^4.1.10"
   }
 }

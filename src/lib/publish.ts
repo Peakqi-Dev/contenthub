@@ -1,8 +1,8 @@
 import type { MediaAsset, PublishJob, SocialAccount, Variant } from "@prisma/client";
 import { ContentStatus, JobStatus, Prisma } from "@prisma/client";
 import { getAdapter } from "./adapters";
-import { normalizeError } from "./adapters/base";
-import type { DecryptedAccount, PublishPayload } from "./adapters/types";
+import { normalizeError, PublishError } from "./adapters/base";
+import type { DecryptedAccount, PublishPayload, PublishResult } from "./adapters/types";
 import { decryptSecret } from "./crypto";
 import { prisma } from "./db";
 
@@ -98,29 +98,60 @@ export async function executePublishJob(jobId: string): Promise<PublishJob> {
     const account = decryptAccount(job.variant.account);
     const result = await adapter.publish(payload, account);
 
-    const [updated] = await prisma.$transaction([
-      prisma.publishJob.update({
-        where: { id: job.id },
-        data: {
-          status: JobStatus.PUBLISHED,
-          externalPostId: result.externalPostId,
-          externalUrl: result.externalUrl,
-          containerId: result.containerId,
-          errorCode: null,
-          errorMessage: null,
-          completedAt: new Date(),
-        },
-      }),
-      prisma.contentPiece.update({
-        where: { id: job.variant.contentPieceId },
-        data: { status: ContentStatus.PUBLISHED },
-      }),
-    ]);
-    return updated;
+    // 發布已成功。之後的 DB 回寫失敗絕不能把 job 標成 FAILED——
+    // 貼文已在平台上線，標 FAILED 會誘使重發造成平台端重複貼文。
+    return await recordSuccess(job.id, job.variant.contentPieceId, result);
   } catch (err) {
     const e = normalizeError(err);
     return markFailed(job.id, e.code, e.message);
   }
+}
+
+async function recordSuccess(
+  jobId: string,
+  contentPieceId: string,
+  result: PublishResult
+): Promise<PublishJob> {
+  const data = {
+    status: JobStatus.PUBLISHED,
+    externalPostId: result.externalPostId,
+    externalUrl: result.externalUrl,
+    containerId: result.containerId,
+    errorCode: null,
+    errorMessage: null,
+    completedAt: new Date(),
+  } as const;
+
+  // 回寫重試最多 3 次（連線池抖動等暫時性 DB 錯誤）
+  let lastError: unknown;
+  for (let i = 0; i < 3; i++) {
+    try {
+      const [updated] = await prisma.$transaction([
+        prisma.publishJob.update({ where: { id: jobId }, data }),
+        prisma.contentPiece.update({
+          where: { id: contentPieceId },
+          data: { status: ContentStatus.PUBLISHED },
+        }),
+      ]);
+      return updated;
+    } catch (err) {
+      lastError = err;
+      await new Promise((r) => setTimeout(r, 500 * (i + 1)));
+    }
+  }
+  // 回寫徹底失敗：大聲留 log（含 externalPostId 供人工對帳），job 留在 PROCESSING
+  // 等後續 Sprint 的對帳機制回收，絕不標 FAILED。
+  console.error(
+    `[publish] job ${jobId} 已在平台發布成功但 DB 回寫失敗，` +
+      `externalPostId=${result.externalPostId} externalUrl=${result.externalUrl ?? "-"}`,
+    lastError
+  );
+  throw new PublishError(
+    "RECORD_WRITE_FAILED",
+    `貼文已發布（${result.externalPostId}）但 DB 回寫失敗，請人工確認`,
+    false,
+    lastError
+  );
 }
 
 async function markFailed(

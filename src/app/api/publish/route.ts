@@ -1,26 +1,39 @@
 import { NextRequest, NextResponse } from "next/server";
-import { ContentStatus, JobStatus, Platform, Surface } from "@prisma/client";
+import { ContentStatus, JobStatus, Prisma, Surface } from "@prisma/client";
+import { registeredPlatforms } from "@/lib/adapters";
 import { prisma } from "@/lib/db";
 import { executePublishJob } from "@/lib/publish";
 
-// POST /api/publish — Sprint 0 的立即發布通道：
+// POST /api/publish — 立即發布通道：
 // 建立 ContentPiece + Variant + PublishJob，同步執行發布（純文字走 route handler，規格 §7），
-// 回傳完整 job 紀錄。排程通道（POST /api/schedule + cron dispatcher）屬 Sprint 3。
+// 回傳完整 job 紀錄。排程通道（POST /api/schedule + cron dispatcher）屬後續 Sprint。
 //
 // body: {
 //   text: string          必填，貼文內容
 //   title?: string        ContentPiece 標題，預設取內文前 50 字
-//   accountId?: string    指定帳號；不填則取唯一啟用中的 Bluesky 帳號
-//   langs?: string[]      語言代碼，最多 3 個，如 ["zh-TW"]
+//   accountId?: string    指定帳號；不填則取第一個「已有 adapter 的平台」的啟用帳號
+//   surface?: string      預設 FEED
+//   platformOpts?: object 平台專屬選項（原樣存入 Variant.platformOpts）
 //   idempotencyKey?: string  防重複；同 key 重打會回傳既有 job，不會重發
 // }
+
+// 無認證入口的基本防線：擋掉異常大的輸入（規格第一階段為單人自用）
+const MAX_TEXT_CHARS = 10_000;
+const MAX_TITLE_CHARS = 200;
+const MAX_PLATFORM_OPTS_BYTES = 4_096;
+const MAX_IDEMPOTENCY_KEY_CHARS = 200;
 
 interface PublishRequestBody {
   text?: unknown;
   title?: unknown;
   accountId?: unknown;
-  langs?: unknown;
+  surface?: unknown;
+  platformOpts?: unknown;
   idempotencyKey?: unknown;
+}
+
+function badRequest(message: string) {
+  return NextResponse.json({ error: message }, { status: 400 });
 }
 
 export async function POST(req: NextRequest) {
@@ -28,43 +41,79 @@ export async function POST(req: NextRequest) {
   try {
     body = await req.json();
   } catch {
-    return NextResponse.json({ error: "request body 必須是 JSON" }, { status: 400 });
+    return badRequest("request body 必須是 JSON");
   }
 
   const text = typeof body.text === "string" ? body.text : "";
-  if (!text.trim()) {
-    return NextResponse.json({ error: "text 為必填欄位" }, { status: 400 });
+  if (!text.trim()) return badRequest("text 為必填欄位");
+  if (text.length > MAX_TEXT_CHARS) {
+    return badRequest(`text 過長（上限 ${MAX_TEXT_CHARS} 字元；各平台實際上限另由預檢把關）`);
   }
-  if (body.langs !== undefined && !Array.isArray(body.langs)) {
-    return NextResponse.json({ error: "langs 需為字串陣列" }, { status: 400 });
+  if (body.title !== undefined && typeof body.title !== "string") {
+    return badRequest("title 需為字串");
   }
+  if (typeof body.title === "string" && body.title.length > MAX_TITLE_CHARS) {
+    return badRequest(`title 過長（上限 ${MAX_TITLE_CHARS} 字元）`);
+  }
+
+  let surface: Surface = Surface.FEED;
+  if (body.surface !== undefined) {
+    if (
+      typeof body.surface !== "string" ||
+      !Object.prototype.hasOwnProperty.call(Surface, body.surface)
+    ) {
+      return badRequest(`surface 必須是 ${Object.keys(Surface).join(" / ")}`);
+    }
+    surface = body.surface as Surface;
+  }
+
+  let platformOpts: Prisma.InputJsonValue | undefined;
+  if (body.platformOpts !== undefined) {
+    if (typeof body.platformOpts !== "object" || body.platformOpts === null || Array.isArray(body.platformOpts)) {
+      return badRequest("platformOpts 需為物件");
+    }
+    const serialized = JSON.stringify(body.platformOpts);
+    if (new TextEncoder().encode(serialized).length > MAX_PLATFORM_OPTS_BYTES) {
+      return badRequest(`platformOpts 過大（上限 ${MAX_PLATFORM_OPTS_BYTES} bytes）`);
+    }
+    platformOpts = body.platformOpts as Prisma.InputJsonValue;
+  }
+
   const clientKey =
     typeof body.idempotencyKey === "string" && body.idempotencyKey ? body.idempotencyKey : null;
+  if (clientKey && clientKey.length > MAX_IDEMPOTENCY_KEY_CHARS) {
+    return badRequest(`idempotencyKey 過長（上限 ${MAX_IDEMPOTENCY_KEY_CHARS} 字元）`);
+  }
 
-  // 冪等：同 key 的 job 已存在就直接回傳，不重發
+  // 冪等 fast path：同 key 的 job 已存在就直接回傳，不重發
   if (clientKey) {
     const existing = await prisma.publishJob.findUnique({
       where: { idempotencyKey: clientKey },
     });
     if (existing) {
-      return NextResponse.json(
-        { deduplicated: true, job: existing },
-        { status: 200 }
-      );
+      return NextResponse.json({ deduplicated: true, job: existing }, { status: 200 });
     }
   }
 
-  // 找帳號
+  // 找帳號：指定 accountId，或取第一個「已有 adapter 的平台」的啟用帳號
+  const available = registeredPlatforms();
   const account =
     typeof body.accountId === "string" && body.accountId
       ? await prisma.socialAccount.findUnique({ where: { id: body.accountId } })
-      : await prisma.socialAccount.findFirst({
-          where: { platform: Platform.BLUESKY, isActive: true },
-        });
+      : available.length > 0
+        ? await prisma.socialAccount.findFirst({
+            where: { platform: { in: available }, isActive: true },
+          })
+        : null;
 
   if (!account) {
     return NextResponse.json(
-      { error: "找不到可用的帳號。請先執行 `npm run connect:bluesky` 連結 Bluesky 帳號。" },
+      {
+        error:
+          available.length === 0
+            ? "目前沒有任何已實作的平台 adapter（實作順序見 lib/adapters/index.ts，LINE OA 為第一個）"
+            : "找不到可用的帳號，請先連結帳號",
+      },
       { status: 404 }
     );
   }
@@ -74,48 +123,66 @@ export async function POST(req: NextRequest) {
 
   // 建立 ContentPiece → Variant → PublishJob（同一交易）
   const scheduledAt = new Date();
-  const { job, variant } = await prisma.$transaction(async (tx) => {
-    const contentPiece = await tx.contentPiece.create({
-      data: {
-        title:
-          typeof body.title === "string" && body.title.trim()
-            ? body.title.trim()
-            : text.slice(0, 50),
-        sourceText: text,
-        status: ContentStatus.READY,
-      },
+  let created: { jobId: string; variantId: string; contentPieceId: string };
+  try {
+    created = await prisma.$transaction(async (tx) => {
+      const contentPiece = await tx.contentPiece.create({
+        data: {
+          title:
+            typeof body.title === "string" && body.title.trim()
+              ? body.title.trim()
+              : text.slice(0, 50),
+          sourceText: text,
+          status: ContentStatus.READY,
+        },
+      });
+      const variant = await tx.variant.create({
+        data: {
+          contentPieceId: contentPiece.id,
+          accountId: account.id,
+          surface,
+          body: text,
+          platformOpts,
+        },
+      });
+      const job = await tx.publishJob.create({
+        data: {
+          variantId: variant.id,
+          scheduledAt,
+          // 規格 §7：idempotencyKey 必填，預設 `${variantId}:${scheduledAt ISO}`
+          idempotencyKey: clientKey ?? `${variant.id}:${scheduledAt.toISOString()}`,
+        },
+      });
+      return { jobId: job.id, variantId: variant.id, contentPieceId: contentPiece.id };
     });
-    const variant = await tx.variant.create({
-      data: {
-        contentPieceId: contentPiece.id,
-        accountId: account.id,
-        surface: Surface.FEED,
-        body: text,
-        platformOpts: body.langs ? { langs: body.langs } : undefined,
-      },
-    });
-    const job = await tx.publishJob.create({
-      data: {
-        variantId: variant.id,
-        scheduledAt,
-        // 規格 §7：idempotencyKey 必填，預設 `${variantId}:${scheduledAt ISO}`
-        idempotencyKey: clientKey ?? `${variant.id}:${scheduledAt.toISOString()}`,
-      },
-    });
-    return { job, variant };
-  });
+  } catch (err) {
+    // 併發同 key 請求：後到者撞 unique 約束（P2002）→ 回傳既有 job，維持冪等合約
+    if (
+      clientKey &&
+      err instanceof Prisma.PrismaClientKnownRequestError &&
+      err.code === "P2002"
+    ) {
+      const existing = await prisma.publishJob.findUnique({
+        where: { idempotencyKey: clientKey },
+      });
+      if (existing) {
+        return NextResponse.json({ deduplicated: true, job: existing }, { status: 200 });
+      }
+    }
+    throw err;
+  }
 
-  // 同步執行（Bluesky 純文字，幾秒內完成）
-  const finished = await executePublishJob(job.id);
+  // 同步執行（純文字，幾秒內完成）
+  const finished = await executePublishJob(created.jobId);
 
   const refreshedVariant = await prisma.variant.findUnique({
-    where: { id: variant.id },
-    select: { id: true, contentPieceId: true, validationState: true },
+    where: { id: created.variantId },
+    select: { validationState: true },
   });
 
   const response = {
-    contentPieceId: refreshedVariant?.contentPieceId ?? variant.contentPieceId,
-    variantId: variant.id,
+    contentPieceId: created.contentPieceId,
+    variantId: created.variantId,
     job: finished,
     validation: refreshedVariant?.validationState ?? null,
   };

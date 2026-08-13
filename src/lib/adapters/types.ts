@@ -2,17 +2,34 @@ import type { MediaKind, Platform, PublishTier, Surface } from "@prisma/client";
 
 // ============ Capability（平台差異用資料描述，不用 if-else，規格 §1 決策三）============
 
+// 各平台字數演算法不同（規格 v1.1 修訂 3）：
+//   CHARS       以 Unicode grapheme cluster 計（Threads 等「算字元」的平台）
+//   UTF8_BYTES  以 UTF-8 bytes 計
+//   UTF16       以 UTF-16 code units 計（IG 等）
+//   X_WEIGHTED  X 的加權計算（URL 固定 23、CJK 權重 2）
+export type TextCountingMode = "CHARS" | "UTF8_BYTES" | "UTF16" | "X_WEIGHTED";
+
+export interface TextCapability {
+  /** 同一平台可同時有多種上限（例如 grapheme 與 byte 雙上限），有定義的都會被檢查 */
+  limits: {
+    chars?: number;
+    utf8Bytes?: number;
+    utf16Units?: number;
+    weighted?: number;
+  };
+  /** 主要計數模式：UI 字數顯示、validate() 主訊息以此為準 */
+  countingMode: TextCountingMode;
+  supportsMarkdown: boolean;
+  supportsHashtags: boolean;
+  urlCountsAsChars: boolean;
+}
+
 export interface PlatformCapabilities {
   platform: Platform;
   publishTier: PublishTier;
   surfaces: Surface[];
 
-  text: {
-    maxLength: number;
-    supportsMarkdown: boolean;
-    supportsHashtags: boolean;
-    urlCountsAsChars: boolean;
-  };
+  text: TextCapability;
 
   media: {
     requiresPublicUrl: boolean; // Meta 家族全為 true

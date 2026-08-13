@@ -9,11 +9,23 @@ export async function GET(req: NextRequest) {
   const from = searchParams.get("from");
   const to = searchParams.get("to");
 
-  if (status && !(status in JobStatus)) {
+  // hasOwnProperty：`status in JobStatus` 會被原型鏈繞過（?status=toString → 500）
+  if (status && !Object.prototype.hasOwnProperty.call(JobStatus, status)) {
     return NextResponse.json(
       { error: `status 必須是 ${Object.keys(JobStatus).join(" / ")}` },
       { status: 400 }
     );
+  }
+  for (const [name, value] of [
+    ["from", from],
+    ["to", to],
+  ] as const) {
+    if (value && Number.isNaN(Date.parse(value))) {
+      return NextResponse.json(
+        { error: `${name} 不是有效的日期格式（請用 ISO 8601，如 2026-08-14T00:00:00Z）` },
+        { status: 400 }
+      );
+    }
   }
 
   const where: Prisma.PublishJobWhereInput = {};
