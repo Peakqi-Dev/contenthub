@@ -1,0 +1,199 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ============ 帳號與憑證 ============
+
+model SocialAccount {
+  id                String      @id @default(cuid())
+  userId            String      @default("local") // 多租戶預留：目前固定 "local"（規格 §13）
+  platform          Platform
+  publishTier       PublishTier
+  displayName       String // "Allen 的粉專"
+  platformAccountId String // page_id / ig_user_id / threads_user_id / bluesky did
+  accessToken       String      @db.Text // AES-256-GCM 加密後存
+  refreshToken      String?     @db.Text
+  tokenExpiresAt    DateTime?
+  scopes            String[]
+  meta              Json? // 平台專屬：pageId, igBusinessId, lineChannelId...
+  isActive          Boolean     @default(true)
+  lastHealthCheckAt DateTime?
+  healthStatus      String? // OK / TOKEN_EXPIRING / REVOKED / RATE_LIMITED
+  variants          Variant[]
+  createdAt         DateTime    @default(now())
+  updatedAt         DateTime    @updatedAt
+
+  @@unique([platform, platformAccountId])
+}
+
+// ============ 內容 ============
+
+model ContentPiece {
+  id           String          @id @default(cuid())
+  title        String
+  sourceText   String          @db.Text // 原始輸入（作者寫的）
+  canonicalUrl String? // 自家站點的正式連結
+  topic        String?
+  tags         String[]
+  status       ContentStatus   @default(DRAFT)
+  variants     Variant[]
+  assets       MediaAsset[]
+  generations  GenerationRun[]
+  createdAt    DateTime        @default(now())
+  updatedAt    DateTime        @updatedAt
+}
+
+model Variant {
+  id             String       @id @default(cuid())
+  contentPieceId String
+  contentPiece   ContentPiece @relation(fields: [contentPieceId], references: [id], onDelete: Cascade)
+  accountId      String
+  account        SocialAccount @relation(fields: [accountId], references: [id])
+
+  surface       Surface // FEED / STORY / REEL / ARTICLE / BROADCAST
+  body          String  @db.Text // 該平台的最終文字
+  assetIds      String[] // 對應 MediaAsset，有序
+  linkInComment Boolean @default(false) // X 省成本用：連結放留言
+  platformOpts  Json? // 平台專屬：subreddit, ytCategory, igShareToFeed...
+
+  validationState Json? // 預檢結果快取
+  jobs            PublishJob[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([contentPieceId])
+}
+
+model MediaAsset {
+  id              String        @id @default(cuid())
+  contentPieceId  String?
+  contentPiece    ContentPiece? @relation(fields: [contentPieceId], references: [id])
+  kind            MediaKind // IMAGE / VIDEO / AUDIO
+  blobUrl         String // Vercel Blob 公開 URL（必須公開）
+  mimeType        String
+  width           Int?
+  height          Int?
+  durationSec     Float?
+  sizeBytes       Int
+  aspectRatio     String? // "9:16" / "1:1" / "16:9"
+  source          AssetSource // UPLOAD / AI_GENERATED
+  generationRunId String?
+  createdAt       DateTime      @default(now())
+}
+
+// ============ 發布任務 ============
+
+model PublishJob {
+  id        String  @id @default(cuid())
+  variantId String
+  variant   Variant @relation(fields: [variantId], references: [id], onDelete: Cascade)
+
+  scheduledAt DateTime
+  status      JobStatus @default(PENDING)
+  attempts    Int       @default(0)
+  maxAttempts Int       @default(3)
+
+  externalPostId String? // 平台回傳的貼文 ID
+  externalUrl    String?
+  containerId    String? // Meta 容器模式的中繼 ID
+  errorCode      String?
+  errorMessage   String? @db.Text
+  idempotencyKey String  @unique // 防重複發布，必填
+
+  startedAt   DateTime?
+  completedAt DateTime?
+  createdAt   DateTime  @default(now())
+
+  @@index([status, scheduledAt])
+  @@index([variantId])
+}
+
+// ============ AI 生成紀錄 ============
+
+model GenerationRun {
+  id             String        @id @default(cuid())
+  contentPieceId String?
+  contentPiece   ContentPiece? @relation(fields: [contentPieceId], references: [id])
+  modality       Modality // TEXT / IMAGE / VIDEO
+  model          String // "google/gemini-3-pro-image"
+  prompt         String        @db.Text
+  systemPrompt   String?       @db.Text
+  outputRef      String?       @db.Text // 文字內容或 blob URL
+  costUsd        Decimal?      @db.Decimal(10, 6)
+  latencyMs      Int?
+  status         String // OK / FAILED
+  errorMessage   String?       @db.Text
+  createdAt      DateTime      @default(now())
+}
+
+// ============ 列舉 ============
+
+enum Platform {
+  FACEBOOK_PAGE
+  INSTAGRAM
+  THREADS
+  LINE_OA
+  X
+  LINKEDIN
+  BLUESKY
+  YOUTUBE
+  MEDIUM
+  XIAOHONGSHU
+  THREADS_ASSISTED
+}
+
+enum PublishTier {
+  AUTO_API
+  AUTO_AGGREGATOR
+  ASSISTED
+}
+
+enum Surface {
+  FEED
+  STORY
+  REEL
+  ARTICLE
+  BROADCAST
+}
+
+enum MediaKind {
+  IMAGE
+  VIDEO
+  AUDIO
+}
+
+enum AssetSource {
+  UPLOAD
+  AI_GENERATED
+}
+
+enum Modality {
+  TEXT
+  IMAGE
+  VIDEO
+}
+
+enum ContentStatus {
+  DRAFT
+  READY
+  SCHEDULED
+  PUBLISHED
+  ARCHIVED
+}
+
+enum JobStatus {
+  PENDING
+  QUEUED
+  PROCESSING
+  AWAITING_MEDIA
+  PUBLISHED
+  FAILED
+  CANCELLED
+  ASSISTED_PENDING
+}
