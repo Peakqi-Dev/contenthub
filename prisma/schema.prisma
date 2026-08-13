@@ -146,6 +146,7 @@ enum Platform {
   MEDIUM
   XIAOHONGSHU
   THREADS_ASSISTED
+  FAKE // 架構驗證用：不打外部網路，模擬各種成功/失敗情境
 }
 
 enum PublishTier {

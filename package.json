@@ -12,7 +12,8 @@
     "db:generate": "prisma generate",
     "db:migrate": "prisma migrate deploy",
     "db:studio": "prisma studio",
-    "test": "vitest run"
+    "test": "vitest run",
+    "smoke:fake": "tsx --env-file=.env scripts/smoke-fake.ts"
   },
   "dependencies": {
     "@prisma/client": "^6.19.3",

@@ -33,6 +33,11 @@ export interface AdapterContractOptions {
    * SDK 不走 global fetch 的 adapter 需自行提供 stub，回傳還原函式。
    */
   simulatePlatformFailure?: () => () => void;
+  /**
+   * 會讓 publish() 失敗的 payload。不打網路的 adapter（如 FAKE 用
+   * platformOpts.simulate 觸發失敗）用這個取代 fetch 攔截。
+   */
+  failingPayload?: () => PublishPayload;
 }
 
 const MODE_LIMIT_KEY: Record<TextCountingMode, "chars" | "utf8Bytes" | "utf16Units" | "weighted"> =
@@ -103,9 +108,11 @@ export function adapterContract(adapter: PlatformAdapter, opts: AdapterContractO
       }) as typeof fetch;
       try {
         const payload = opts.validPayload();
+        const snapshot = JSON.stringify(payload);
         const a = adapter.validate(payload);
         const b = adapter.validate(payload);
         expect(a).toEqual(b);
+        expect(JSON.stringify(payload), "validate() 不得修改傳入的 payload").toBe(snapshot);
         adapter.validate({ ...opts.validPayload(), body: overBody() });
       } finally {
         globalThis.fetch = originalFetch;
@@ -151,7 +158,7 @@ export function adapterContract(adapter: PlatformAdapter, opts: AdapterContractO
         })();
       let thrown: unknown;
       try {
-        await adapter.publish(opts.validPayload(), account);
+        await adapter.publish(opts.failingPayload?.() ?? opts.validPayload(), account);
       } catch (err) {
         thrown = err;
       } finally {
@@ -164,6 +171,9 @@ export function adapterContract(adapter: PlatformAdapter, opts: AdapterContractO
       expect(e.code.length).toBeGreaterThan(0);
       // 憑證絕不能出現在錯誤訊息（會進 DB 的 errorMessage 與 log）
       expect(e.message).not.toContain(account.accessToken);
+      if (account.refreshToken) {
+        expect(e.message).not.toContain(account.refreshToken);
+      }
     });
   });
 }

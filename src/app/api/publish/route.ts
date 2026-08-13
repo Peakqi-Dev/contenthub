@@ -1,8 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
-import { ContentStatus, JobStatus, Prisma, Surface } from "@prisma/client";
-import { registeredPlatforms } from "@/lib/adapters";
+import { JobStatus, Prisma, Surface } from "@prisma/client";
+import { isAdapterRegistered, registeredPlatforms } from "@/lib/adapters";
 import { prisma } from "@/lib/db";
-import { executePublishJob } from "@/lib/publish";
+import { publishText } from "@/lib/publish";
 
 // POST /api/publish — 立即發布通道：
 // 建立 ContentPiece + Variant + PublishJob，同步執行發布（純文字走 route handler，規格 §7），
@@ -69,7 +69,11 @@ export async function POST(req: NextRequest) {
 
   let platformOpts: Prisma.InputJsonValue | undefined;
   if (body.platformOpts !== undefined) {
-    if (typeof body.platformOpts !== "object" || body.platformOpts === null || Array.isArray(body.platformOpts)) {
+    if (
+      typeof body.platformOpts !== "object" ||
+      body.platformOpts === null ||
+      Array.isArray(body.platformOpts)
+    ) {
       return badRequest("platformOpts 需為物件");
     }
     const serialized = JSON.stringify(body.platformOpts);
@@ -79,20 +83,12 @@ export async function POST(req: NextRequest) {
     platformOpts = body.platformOpts as Prisma.InputJsonValue;
   }
 
-  const clientKey =
-    typeof body.idempotencyKey === "string" && body.idempotencyKey ? body.idempotencyKey : null;
-  if (clientKey && clientKey.length > MAX_IDEMPOTENCY_KEY_CHARS) {
+  const idempotencyKey =
+    typeof body.idempotencyKey === "string" && body.idempotencyKey
+      ? body.idempotencyKey
+      : undefined;
+  if (idempotencyKey && idempotencyKey.length > MAX_IDEMPOTENCY_KEY_CHARS) {
     return badRequest(`idempotencyKey 過長（上限 ${MAX_IDEMPOTENCY_KEY_CHARS} 字元）`);
-  }
-
-  // 冪等 fast path：同 key 的 job 已存在就直接回傳，不重發
-  if (clientKey) {
-    const existing = await prisma.publishJob.findUnique({
-      where: { idempotencyKey: clientKey },
-    });
-    if (existing) {
-      return NextResponse.json({ deduplicated: true, job: existing }, { status: 200 });
-    }
   }
 
   // 找帳號：指定 accountId，或取第一個「已有 adapter 的平台」的啟用帳號
@@ -111,7 +107,7 @@ export async function POST(req: NextRequest) {
       {
         error:
           available.length === 0
-            ? "目前沒有任何已實作的平台 adapter（實作順序見 lib/adapters/index.ts，LINE OA 為第一個）"
+            ? "目前沒有任何已實作的平台 adapter（實作順序見 lib/adapters/index.ts）"
             : "找不到可用的帳號，請先連結帳號",
       },
       { status: 404 }
@@ -120,76 +116,36 @@ export async function POST(req: NextRequest) {
   if (!account.isActive) {
     return NextResponse.json({ error: `帳號 ${account.displayName} 已停用` }, { status: 409 });
   }
-
-  // 建立 ContentPiece → Variant → PublishJob（同一交易）
-  const scheduledAt = new Date();
-  let created: { jobId: string; variantId: string; contentPieceId: string };
-  try {
-    created = await prisma.$transaction(async (tx) => {
-      const contentPiece = await tx.contentPiece.create({
-        data: {
-          title:
-            typeof body.title === "string" && body.title.trim()
-              ? body.title.trim()
-              : text.slice(0, 50),
-          sourceText: text,
-          status: ContentStatus.READY,
-        },
-      });
-      const variant = await tx.variant.create({
-        data: {
-          contentPieceId: contentPiece.id,
-          accountId: account.id,
-          surface,
-          body: text,
-          platformOpts,
-        },
-      });
-      const job = await tx.publishJob.create({
-        data: {
-          variantId: variant.id,
-          scheduledAt,
-          // 規格 §7：idempotencyKey 必填，預設 `${variantId}:${scheduledAt ISO}`
-          idempotencyKey: clientKey ?? `${variant.id}:${scheduledAt.toISOString()}`,
-        },
-      });
-      return { jobId: job.id, variantId: variant.id, contentPieceId: contentPiece.id };
-    });
-  } catch (err) {
-    // 併發同 key 請求：後到者撞 unique 約束（P2002）→ 回傳既有 job，維持冪等合約
-    if (
-      clientKey &&
-      err instanceof Prisma.PrismaClientKnownRequestError &&
-      err.code === "P2002"
-    ) {
-      const existing = await prisma.publishJob.findUnique({
-        where: { idempotencyKey: clientKey },
-      });
-      if (existing) {
-        return NextResponse.json({ deduplicated: true, job: existing }, { status: 200 });
-      }
-    }
-    throw err;
+  // 指定 accountId 的路徑也要擋未實作的平台，否則 job 會在 getAdapter 拋錯時卡死
+  if (!isAdapterRegistered(account.platform)) {
+    return NextResponse.json(
+      { error: `平台 ${account.platform} 的 adapter 尚未實作，無法發布` },
+      { status: 409 }
+    );
   }
 
-  // 同步執行（純文字，幾秒內完成）
-  const finished = await executePublishJob(created.jobId);
-
-  const refreshedVariant = await prisma.variant.findUnique({
-    where: { id: created.variantId },
-    select: { validationState: true },
+  const outcome = await publishText(account, {
+    text,
+    title: typeof body.title === "string" ? body.title : undefined,
+    surface,
+    platformOpts,
+    idempotencyKey,
   });
 
+  if (outcome.deduplicated) {
+    return NextResponse.json({ deduplicated: true, job: outcome.job }, { status: 200 });
+  }
+
   const response = {
-    contentPieceId: created.contentPieceId,
-    variantId: created.variantId,
-    job: finished,
-    validation: refreshedVariant?.validationState ?? null,
+    contentPieceId: outcome.contentPieceId,
+    variantId: outcome.variantId,
+    job: outcome.job,
+    validation: outcome.validation,
   };
 
-  if (finished.status === JobStatus.PUBLISHED) {
+  if (outcome.job.status === JobStatus.PUBLISHED) {
     return NextResponse.json(response, { status: 201 });
   }
-  const status = finished.errorCode === "VALIDATION_FAILED" ? 422 : 502;
+  const status = outcome.job.errorCode === "VALIDATION_FAILED" ? 422 : 502;
   return NextResponse.json(response, { status });
 }

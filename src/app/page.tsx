@@ -7,14 +7,15 @@ import { prisma } from "@/lib/db";
 
 export const dynamic = "force-dynamic";
 
-// 規格 v1.1 修訂 5 的實作順序
+// 實作順序（規格 v1.1，2026-08-14 二次修訂）
 const ADAPTER_ORDER: { platform: Platform; label: string; note: string }[] = [
-  { platform: Platform.LINE_OA, label: "LINE OA", note: "job 狀態機與冪等性" },
+  { platform: Platform.FAKE, label: "Fake", note: "架構驗證：狀態機 / 重試 / 冪等" },
   { platform: Platform.THREADS, label: "Threads", note: "Meta 家族最小樣本" },
   { platform: Platform.FACEBOOK_PAGE, label: "FB 粉專", note: "容器模式 + token 刷新" },
   { platform: Platform.INSTAGRAM, label: "Instagram", note: "FEED / STORY / REEL" },
   { platform: Platform.X, label: "X", note: "linkInComment 成本開關" },
   { platform: Platform.MEDIUM, label: "Medium", note: "ASSISTED" },
+  { platform: Platform.LINE_OA, label: "LINE OA", note: "推播計費，最後實作" },
 ];
 
 const JOB_BADGE: Record<string, string> = {

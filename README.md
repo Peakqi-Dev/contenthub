@@ -9,16 +9,21 @@
 
 只做這六個，其餘一律不實作：**Facebook 粉專、Instagram、Threads、X、LINE OA、Medium（ASSISTED）**
 
-Adapter 實作順序（v1.1 修訂 5，一次只做一個）：
+Adapter 實作順序（v1.1，2026-08-14 二次修訂；一次只做一個）：
 
-1. **LINE OA** — 無審核、無容器模式、無 OAuth 來回，用來跑順 job 狀態機與冪等性
+1. **Fake** — 架構驗證：不打外網，驗 job 狀態機、重試邏輯、冪等性 ✅
 2. **Threads** — Meta 家族最小樣本
 3. **meta/shared.ts + Facebook 粉專** — 容器模式 + token 刷新
 4. **Instagram** — FEED / STORY / REEL，複用 shared.ts
 5. **X** — 含 linkInComment 成本開關
 6. **Medium** — ASSISTED（自家站發布 → Medium Import）
+7. **LINE OA** — 推播計費，最後實作
 
 每個 adapter 的工作紀律（v1.1 修訂 6）：開工前先讀該平台**官方文件**確認端點與參數；完成的定義不是測試綠燈，而是 `scripts/smoke-{platform}.ts` 真的在自己的帳號發出一則貼文。
+
+**Sprint 0 驗收（`npm run smoke:fake`）**：執行後 DB 有一筆 PublishJob 狀態 `PUBLISHED`；重跑同一指令不會產生第二筆（冪等性生效）；模擬失敗時正確重試到 `maxAttempts=3` 後轉 `FAILED`。
+
+Fake adapter 以 `platformOpts.simulate` 模擬失敗情境：`TIMEOUT`（逾時，可重試）/ `RATE_LIMIT`（429，可重試）/ `MEDIA_PROCESSING`（容器模式：回 containerId，輪詢兩次後 FINISHED）/ `TOKEN_EXPIRED`（401，不重試直接 FAILED）。發布紀錄寫入 `logs/fake-publish.log`。
 
 > Meta 註記（v1.1 修訂 1）：自用（發到自己的粉專/IG）走 **Standard Access 即可，不需 App Review**。App Review 只在未來開放其他使用者時才需要。
 

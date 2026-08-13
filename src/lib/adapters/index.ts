@@ -1,17 +1,21 @@
-import type { Platform } from "@prisma/client";
+import { Platform } from "@prisma/client";
+import { fakeAdapter } from "./fake";
 import type { PlatformAdapter, PlatformCapabilities } from "./types";
 
 // Registry：platform → adapter（規格 §1 決策三）
 // 新平台上線 = 實作 PlatformAdapter + 通過 __tests__/contract.ts + 在這裡登記一行。
 //
-// 規格 v1.1 修訂 5 的實作順序（一次只做一個，其他檔案不動）：
-//   1. LINE_OA（無審核、無容器模式，用來跑順 job 狀態機與冪等性）
+// 實作順序（規格 v1.1，2026-08-14 二次修訂；一次只做一個，其他檔案不動）：
+//   1. FAKE（架構驗證：job 狀態機、重試、冪等性）✅
 //   2. THREADS
 //   3. meta/shared.ts + FACEBOOK_PAGE
-//   4. INSTAGRAM
+//   4. INSTAGRAM（FEED / STORY / REEL）
 //   5. X
 //   6. MEDIUM（ASSISTED）
-const registry: Partial<Record<Platform, PlatformAdapter>> = {};
+//   7. LINE_OA
+const registry: Partial<Record<Platform, PlatformAdapter>> = {
+  [Platform.FAKE]: fakeAdapter,
+};
 
 export function getAdapter(platform: Platform): PlatformAdapter {
   const adapter = registry[platform];
