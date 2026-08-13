@@ -1,103 +1,223 @@
-import Image from "next/image";
+import { Platform } from "@prisma/client";
+import { registeredPlatforms } from "@/lib/adapters";
+import { prisma } from "@/lib/db";
 
-export default function Home() {
+// Sprint 0 暫時的狀態首頁：顯示系統健康、adapter 進度、帳號與最近任務。
+// Sprint 2 會被正式編輯器 UI（/compose 等）取代。
+
+export const dynamic = "force-dynamic";
+
+// 規格 v1.1 修訂 5 的實作順序
+const ADAPTER_ORDER: { platform: Platform; label: string; note: string }[] = [
+  { platform: Platform.LINE_OA, label: "LINE OA", note: "job 狀態機與冪等性" },
+  { platform: Platform.THREADS, label: "Threads", note: "Meta 家族最小樣本" },
+  { platform: Platform.FACEBOOK_PAGE, label: "FB 粉專", note: "容器模式 + token 刷新" },
+  { platform: Platform.INSTAGRAM, label: "Instagram", note: "FEED / STORY / REEL" },
+  { platform: Platform.X, label: "X", note: "linkInComment 成本開關" },
+  { platform: Platform.MEDIUM, label: "Medium", note: "ASSISTED" },
+];
+
+const JOB_BADGE: Record<string, string> = {
+  PUBLISHED: "bg-emerald-100 text-emerald-800 dark:bg-emerald-900/50 dark:text-emerald-300",
+  FAILED: "bg-red-100 text-red-800 dark:bg-red-900/50 dark:text-red-300",
+  PROCESSING: "bg-amber-100 text-amber-800 dark:bg-amber-900/50 dark:text-amber-300",
+};
+
+function fmt(d: Date) {
+  return new Intl.DateTimeFormat("zh-TW", {
+    timeZone: "Asia/Taipei",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+  }).format(d);
+}
+
+async function loadData() {
+  try {
+    const [accounts, jobs] = await Promise.all([
+      prisma.socialAccount.findMany({
+        select: {
+          id: true,
+          platform: true,
+          displayName: true,
+          isActive: true,
+          healthStatus: true,
+          tokenExpiresAt: true,
+        },
+        orderBy: { createdAt: "asc" },
+      }),
+      prisma.publishJob.findMany({
+        take: 10,
+        orderBy: { createdAt: "desc" },
+        include: {
+          variant: {
+            select: {
+              surface: true,
+              body: true,
+              account: { select: { platform: true, displayName: true } },
+            },
+          },
+        },
+      }),
+    ]);
+    return { ok: true as const, accounts, jobs };
+  } catch (err) {
+    return {
+      ok: false as const,
+      error: err instanceof Error ? err.message.slice(0, 300) : String(err),
+    };
+  }
+}
+
+export default async function Home() {
+  const registered = new Set<Platform>(registeredPlatforms());
+  const data = await loadData();
+
   return (
-    <div className="font-sans grid grid-rows-[20px_1fr_20px] items-center justify-items-center min-h-screen p-8 pb-20 gap-16 sm:p-20">
-      <main className="flex flex-col gap-[32px] row-start-2 items-center sm:items-start">
-        <Image
-          className="dark:invert"
-          src="/next.svg"
-          alt="Next.js logo"
-          width={180}
-          height={38}
-          priority
-        />
-        <ol className="font-mono list-inside list-decimal text-sm/6 text-center sm:text-left">
-          <li className="mb-2 tracking-[-.01em]">
-            Get started by editing{" "}
-            <code className="bg-black/[.05] dark:bg-white/[.06] font-mono font-semibold px-1 py-0.5 rounded">
-              src/app/page.tsx
-            </code>
-            .
-          </li>
-          <li className="tracking-[-.01em]">
-            Save and see your changes instantly.
-          </li>
-        </ol>
+    <div className="min-h-screen bg-zinc-50 text-zinc-900 dark:bg-zinc-950 dark:text-zinc-100">
+      <main className="mx-auto max-w-3xl px-6 py-12 flex flex-col gap-8">
+        <header>
+          <h1 className="text-2xl font-bold">contenthub</h1>
+          <p className="mt-1 text-sm text-zinc-500 dark:text-zinc-400">
+            多平台社群內容發布系統 — 一次撰寫 → 各平台變體 → 預檢 → 排程 → 分發
+          </p>
+          <p className="mt-2 text-xs text-zinc-400 dark:text-zinc-500">
+            Sprint 0 完成（schema / adapter 框架 / 合約測試）・此頁為暫時狀態頁，Sprint 2 由編輯器 UI 取代
+          </p>
+        </header>
 
-        <div className="flex gap-4 items-center flex-col sm:flex-row">
-          <a
-            className="rounded-full border border-solid border-transparent transition-colors flex items-center justify-center bg-foreground text-background gap-2 hover:bg-[#383838] dark:hover:bg-[#ccc] font-medium text-sm sm:text-base h-10 sm:h-12 px-4 sm:px-5 sm:w-auto"
-            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            <Image
-              className="dark:invert"
-              src="/vercel.svg"
-              alt="Vercel logomark"
-              width={20}
-              height={20}
-            />
-            Deploy now
-          </a>
-          <a
-            className="rounded-full border border-solid border-black/[.08] dark:border-white/[.145] transition-colors flex items-center justify-center hover:bg-[#f2f2f2] dark:hover:bg-[#1a1a1a] hover:border-transparent font-medium text-sm sm:text-base h-10 sm:h-12 px-4 sm:px-5 w-full sm:w-auto md:w-[158px]"
-            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            Read our docs
-          </a>
-        </div>
+        {!data.ok && (
+          <div className="rounded-lg border border-red-300 bg-red-50 p-4 text-sm text-red-800 dark:border-red-800 dark:bg-red-950/50 dark:text-red-300">
+            <p className="font-semibold">資料庫連不上</p>
+            <p className="mt-1">
+              請確認 <code className="font-mono">DATABASE_URL</code> 環境變數（Vercel 上需指向雲端
+              Postgres，並跑過 <code className="font-mono">prisma migrate deploy</code>）。
+            </p>
+            <p className="mt-2 font-mono text-xs opacity-70">{data.error}</p>
+          </div>
+        )}
+
+        <section>
+          <h2 className="text-sm font-semibold uppercase tracking-wide text-zinc-500 dark:text-zinc-400">
+            Adapter 進度（v1.1 實作順序）
+          </h2>
+          <ul className="mt-3 grid gap-2 sm:grid-cols-2">
+            {ADAPTER_ORDER.map((a, i) => {
+              const done = registered.has(a.platform);
+              const isNext = !done && ADAPTER_ORDER.findIndex((x) => !registered.has(x.platform)) === i;
+              return (
+                <li
+                  key={a.platform}
+                  className="flex items-center gap-3 rounded-lg border border-zinc-200 bg-white px-4 py-3 dark:border-zinc-800 dark:bg-zinc-900"
+                >
+                  <span className="text-lg">{done ? "✅" : isNext ? "🔜" : "⬜"}</span>
+                  <div>
+                    <p className="text-sm font-medium">
+                      {i + 1}. {a.label}
+                      {isNext && (
+                        <span className="ml-2 rounded bg-blue-100 px-1.5 py-0.5 text-xs text-blue-800 dark:bg-blue-900/50 dark:text-blue-300">
+                          下一個
+                        </span>
+                      )}
+                    </p>
+                    <p className="text-xs text-zinc-500 dark:text-zinc-400">{a.note}</p>
+                  </div>
+                </li>
+              );
+            })}
+          </ul>
+        </section>
+
+        <section>
+          <h2 className="text-sm font-semibold uppercase tracking-wide text-zinc-500 dark:text-zinc-400">
+            已連結帳號
+          </h2>
+          {data.ok && data.accounts.length > 0 ? (
+            <ul className="mt-3 flex flex-col gap-2">
+              {data.accounts.map((a) => (
+                <li
+                  key={a.id}
+                  className="flex items-center justify-between rounded-lg border border-zinc-200 bg-white px-4 py-3 text-sm dark:border-zinc-800 dark:bg-zinc-900"
+                >
+                  <span>
+                    <span className="font-medium">{a.displayName}</span>
+                    <span className="ml-2 text-xs text-zinc-500">{a.platform}</span>
+                  </span>
+                  <span className="text-xs text-zinc-500">
+                    {a.isActive ? (a.healthStatus ?? "—") : "已停用"}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <p className="mt-3 text-sm text-zinc-500 dark:text-zinc-400">
+              尚無帳號。第一個 adapter（LINE OA）完成後在此連結。
+            </p>
+          )}
+        </section>
+
+        <section>
+          <h2 className="text-sm font-semibold uppercase tracking-wide text-zinc-500 dark:text-zinc-400">
+            最近發布任務
+          </h2>
+          {data.ok && data.jobs.length > 0 ? (
+            <ul className="mt-3 flex flex-col gap-2">
+              {data.jobs.map((j) => (
+                <li
+                  key={j.id}
+                  className="rounded-lg border border-zinc-200 bg-white px-4 py-3 dark:border-zinc-800 dark:bg-zinc-900"
+                >
+                  <div className="flex items-center justify-between gap-3">
+                    <span className="text-sm font-medium">
+                      {j.variant.account.displayName}
+                      <span className="ml-2 text-xs text-zinc-500">
+                        {j.variant.account.platform}・{j.variant.surface}
+                      </span>
+                    </span>
+                    <span
+                      className={`rounded px-2 py-0.5 text-xs font-medium ${JOB_BADGE[j.status] ?? "bg-zinc-100 text-zinc-700 dark:bg-zinc-800 dark:text-zinc-300"}`}
+                    >
+                      {j.status}
+                    </span>
+                  </div>
+                  <p className="mt-1 truncate text-sm text-zinc-600 dark:text-zinc-400">
+                    {j.variant.body}
+                  </p>
+                  <p className="mt-1 text-xs text-zinc-400 dark:text-zinc-500">
+                    {fmt(j.createdAt)}
+                    {j.externalUrl && (
+                      <>
+                        {" ・ "}
+                        <a
+                          href={j.externalUrl}
+                          className="underline hover:text-zinc-600 dark:hover:text-zinc-300"
+                          target="_blank"
+                          rel="noreferrer"
+                        >
+                          查看貼文
+                        </a>
+                      </>
+                    )}
+                    {j.errorCode && (
+                      <span className="text-red-500"> ・ {j.errorCode}</span>
+                    )}
+                  </p>
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <p className="mt-3 text-sm text-zinc-500 dark:text-zinc-400">尚無任務。</p>
+          )}
+        </section>
+
+        <footer className="border-t border-zinc-200 pt-4 text-xs text-zinc-400 dark:border-zinc-800 dark:text-zinc-500">
+          API：<code className="font-mono">POST /api/publish</code>・
+          <code className="font-mono">GET /api/jobs</code>・
+          <code className="font-mono">GET /api/accounts</code>・
+          <code className="font-mono">GET /api/capabilities</code>
+        </footer>
       </main>
-      <footer className="row-start-3 flex gap-[24px] flex-wrap items-center justify-center">
-        <a
-          className="flex items-center gap-2 hover:underline hover:underline-offset-4"
-          href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <Image
-            aria-hidden
-            src="/file.svg"
-            alt="File icon"
-            width={16}
-            height={16}
-          />
-          Learn
-        </a>
-        <a
-          className="flex items-center gap-2 hover:underline hover:underline-offset-4"
-          href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <Image
-            aria-hidden
-            src="/window.svg"
-            alt="Window icon"
-            width={16}
-            height={16}
-          />
-          Examples
-        </a>
-        <a
-          className="flex items-center gap-2 hover:underline hover:underline-offset-4"
-          href="https://nextjs.org?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <Image
-            aria-hidden
-            src="/globe.svg"
-            alt="Globe icon"
-            width={16}
-            height={16}
-          />
-          Go to nextjs.org →
-        </a>
-      </footer>
     </div>
   );
 }
