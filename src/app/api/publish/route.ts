@@ -1,7 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { JobStatus, Prisma, Surface } from "@prisma/client";
+import { auth } from "@/auth";
 import { isAdapterRegistered, registeredPlatforms } from "@/lib/adapters";
-import { prisma } from "@/lib/db";
+import { getScopedDb } from "@/lib/db/scoped";
 import { publishText } from "@/lib/publish";
 
 // POST /api/publish — 立即發布通道：
@@ -37,6 +38,12 @@ function badRequest(message: string) {
 }
 
 export async function POST(req: NextRequest) {
+  const session = await auth();
+  if (!session?.user?.id) {
+    return NextResponse.json({ error: "未登入" }, { status: 401 });
+  }
+  const db = getScopedDb(session.user.id);
+
   let body: PublishRequestBody;
   try {
     body = await req.json();
@@ -91,15 +98,13 @@ export async function POST(req: NextRequest) {
     return badRequest(`idempotencyKey 過長（上限 ${MAX_IDEMPOTENCY_KEY_CHARS} 字元）`);
   }
 
-  // 找帳號：指定 accountId，或取第一個「已有 adapter 的平台」的啟用帳號
+  // 找帳號（只在本租戶內找）：指定 accountId，或取第一個「已有 adapter 的平台」的啟用帳號
   const available = registeredPlatforms();
   const account =
     typeof body.accountId === "string" && body.accountId
-      ? await prisma.socialAccount.findUnique({ where: { id: body.accountId } })
+      ? await db.socialAccount.findById(body.accountId)
       : available.length > 0
-        ? await prisma.socialAccount.findFirst({
-            where: { platform: { in: available }, isActive: true },
-          })
+        ? await db.socialAccount.findFirst({ platform: { in: available }, isActive: true })
         : null;
 
   if (!account) {

@@ -33,12 +33,17 @@ export function decryptAccount(account: SocialAccount): DecryptedAccount {
 
 export async function toPayload(
   variant: Variant,
+  ownerUserId: string,
   assets?: MediaAsset[]
 ): Promise<PublishPayload> {
   const resolved =
     assets ??
     (variant.assetIds.length > 0
-      ? await prisma.mediaAsset.findMany({ where: { id: { in: variant.assetIds } } })
+      ? await prisma.mediaAsset.findMany({
+          // 防禦性租戶過濾：assetIds 目前沒有任何寫入點（恆為空陣列），
+          // 但未來 variant 編輯/媒體上傳進來時，這裡保證撈不到別人的資產
+          where: { id: { in: variant.assetIds }, userId: ownerUserId },
+        })
       : []);
   // 依 assetIds 原始順序排列（findMany 不保證順序）
   const byId = new Map(resolved.map((a) => [a.id, a]));
@@ -111,7 +116,7 @@ export async function executePublishJob(
   let account: DecryptedAccount;
   try {
     adapter = getAdapter(job.variant.account.platform);
-    payload = await toPayload(job.variant);
+    payload = await toPayload(job.variant, job.variant.account.userId);
 
     // 預檢（純函式），結果快取到 Variant.validationState
     const issues = adapter.validate(payload);
@@ -279,6 +284,15 @@ export interface PublishTextInput {
   executeOpts?: ExecuteOptions;
 }
 
+/**
+ * PublishJob.idempotencyKey 是全域唯一，但 PublishJob 不存 userId（租戶歸屬經
+ * parent 繼承）。client 自訂的 key 一律加租戶前綴存放，否則不同 user 用同一個
+ * key 會互相碰撞（B 可佔住 A 的 key，甚至經 dedup 讀到 A 的 job）。
+ */
+export function tenantIdempotencyKey(userId: string, clientKey: string): string {
+  return `u:${userId}:${clientKey}`;
+}
+
 export interface PublishTextOutcome {
   deduplicated: boolean;
   job: PublishJob;
@@ -295,12 +309,15 @@ export async function publishText(
   account: SocialAccount,
   input: PublishTextInput
 ): Promise<PublishTextOutcome> {
-  const clientKey = input.idempotencyKey ?? null;
+  // client 自訂 key 加租戶前綴（見 tenantIdempotencyKey 的說明）
+  const storedKey = input.idempotencyKey
+    ? tenantIdempotencyKey(account.userId, input.idempotencyKey)
+    : null;
 
   // 冪等 fast path
-  if (clientKey) {
+  if (storedKey) {
     const existing = await prisma.publishJob.findUnique({
-      where: { idempotencyKey: clientKey },
+      where: { idempotencyKey: storedKey },
     });
     if (existing) return resumeDeduplicated(existing, input);
   }
@@ -311,6 +328,7 @@ export async function publishText(
     created = await prisma.$transaction(async (tx) => {
       const contentPiece = await tx.contentPiece.create({
         data: {
+          userId: account.userId, // 租戶歸屬跟著帳號走
           title: input.title?.trim() || input.text.slice(0, 50),
           sourceText: input.text,
           status: ContentStatus.READY,
@@ -330,7 +348,7 @@ export async function publishText(
           variantId: variant.id,
           scheduledAt,
           // 規格 §7：idempotencyKey 必填，預設 `${variantId}:${scheduledAt ISO}`
-          idempotencyKey: clientKey ?? `${variant.id}:${scheduledAt.toISOString()}`,
+          idempotencyKey: storedKey ?? `${variant.id}:${scheduledAt.toISOString()}`,
         },
       });
       return { jobId: job.id, variantId: variant.id, contentPieceId: contentPiece.id };
@@ -338,12 +356,12 @@ export async function publishText(
   } catch (err) {
     // 併發同 key：後到者撞 unique 約束（P2002）→ 回傳既有 job，維持冪等合約
     if (
-      clientKey &&
+      storedKey &&
       err instanceof Prisma.PrismaClientKnownRequestError &&
       err.code === "P2002"
     ) {
       const existing = await prisma.publishJob.findUnique({
-        where: { idempotencyKey: clientKey },
+        where: { idempotencyKey: storedKey },
       });
       if (existing) return resumeDeduplicated(existing, input);
     }

@@ -10,7 +10,7 @@ import { randomUUID } from "node:crypto";
 import { JobStatus, Platform, PublishTier } from "@prisma/client";
 import { encryptSecret } from "../src/lib/crypto";
 import { prisma } from "../src/lib/db";
-import { publishText } from "../src/lib/publish";
+import { publishText, tenantIdempotencyKey } from "../src/lib/publish";
 
 const SUCCESS_KEY = "smoke-fake-publish"; // 固定 key：重跑同一指令必須 dedup
 const FAST = { retryDelayMs: 20, pollIntervalMs: 20 };
@@ -22,15 +22,22 @@ function check(name: string, ok: boolean, detail: string) {
 }
 
 async function main() {
-  // 0. 準備 FAKE 帳號（假憑證，加密後入庫）
+  // 0. 準備 smoke 專用租戶與 FAKE 帳號（假憑證，加密後入庫）
+  const user = await prisma.user.upsert({
+    where: { email: "smoke@fake.local" },
+    create: { email: "smoke@fake.local", name: "Smoke 測試租戶" },
+    update: {},
+  });
   const account = await prisma.socialAccount.upsert({
     where: {
-      platform_platformAccountId: {
+      userId_platform_platformAccountId: {
+        userId: user.id,
         platform: Platform.FAKE,
         platformAccountId: "fake-local",
       },
     },
     create: {
+      userId: user.id,
       platform: Platform.FAKE,
       publishTier: PublishTier.AUTO_API,
       displayName: "Fake 測試帳號",
@@ -42,13 +49,16 @@ async function main() {
     },
     update: { isActive: true },
   });
-  console.log(`帳號就緒：${account.displayName}（${account.id}）\n`);
+  console.log(`帳號就緒：${account.displayName}（${account.id}，租戶 ${user.email}）\n`);
+
+  // client key 實際存放時帶租戶前綴（見 lib/publish.ts tenantIdempotencyKey）
+  const storedSuccessKey = tenantIdempotencyKey(user.id, SUCCESS_KEY);
 
   // 前次執行若在發布中途被中斷，固定 key 的 job 會殘留 PROCESSING/AWAITING_MEDIA
   // （PENDING 的殘留由 publishText 的 dedup 路徑自動重新驅動，不用處理）。
   // 這是測試 job，直接清掉重來。
   const stale = await prisma.publishJob.findUnique({
-    where: { idempotencyKey: SUCCESS_KEY },
+    where: { idempotencyKey: storedSuccessKey },
   });
   if (stale && (stale.status === JobStatus.PROCESSING || stale.status === JobStatus.AWAITING_MEDIA)) {
     await prisma.publishJob.delete({ where: { id: stale.id } });
@@ -75,7 +85,7 @@ async function main() {
     executeOpts: FAST,
   });
   const countForKey = await prisma.publishJob.count({
-    where: { idempotencyKey: SUCCESS_KEY },
+    where: { idempotencyKey: storedSuccessKey },
   });
   check(
     "驗收 2：冪等性（重跑不產生第二筆）",

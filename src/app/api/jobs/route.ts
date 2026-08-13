@@ -1,9 +1,16 @@
 import { NextRequest, NextResponse } from "next/server";
 import { JobStatus, Prisma } from "@prisma/client";
-import { prisma } from "@/lib/db";
+import { auth } from "@/auth";
+import { getScopedDb } from "@/lib/db/scoped";
 
-// GET /api/jobs?status=&from=&to= — 發布任務清單（規格 §8）
+// GET /api/jobs?status=&from=&to= — 本租戶的發布任務清單（規格 §8）
 export async function GET(req: NextRequest) {
+  const session = await auth();
+  if (!session?.user?.id) {
+    return NextResponse.json({ error: "未登入" }, { status: 401 });
+  }
+  const db = getScopedDb(session.user.id);
+
   const { searchParams } = req.nextUrl;
   const status = searchParams.get("status");
   const from = searchParams.get("from");
@@ -37,24 +44,8 @@ export async function GET(req: NextRequest) {
     };
   }
 
-  const jobs = await prisma.publishJob.findMany({
-    where,
-    orderBy: { createdAt: "desc" },
-    take: 50,
-    include: {
-      variant: {
-        select: {
-          id: true,
-          surface: true,
-          body: true,
-          contentPieceId: true,
-          account: {
-            select: { id: true, platform: true, displayName: true },
-          },
-        },
-      },
-    },
-  });
+  // 變體與帳號摘要由 scoped 層固定附帶
+  const jobs = await db.publishJob.findMany({ where, take: 50 });
 
   return NextResponse.json({ jobs });
 }

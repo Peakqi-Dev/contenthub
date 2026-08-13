@@ -1,6 +1,8 @@
 import { Platform } from "@prisma/client";
+import { redirect } from "next/navigation";
+import { auth, signOut } from "@/auth";
 import { registeredPlatforms } from "@/lib/adapters";
-import { prisma } from "@/lib/db";
+import { getScopedDb, type ScopedDb } from "@/lib/db/scoped";
 
 // Sprint 0 暫時的狀態首頁：顯示系統健康、adapter 進度、帳號與最近任務。
 // Sprint 2 會被正式編輯器 UI（/compose 等）取代。
@@ -34,33 +36,11 @@ function fmt(d: Date) {
   }).format(d);
 }
 
-async function loadData() {
+async function loadData(db: ScopedDb) {
   try {
     const [accounts, jobs] = await Promise.all([
-      prisma.socialAccount.findMany({
-        select: {
-          id: true,
-          platform: true,
-          displayName: true,
-          isActive: true,
-          healthStatus: true,
-          tokenExpiresAt: true,
-        },
-        orderBy: { createdAt: "asc" },
-      }),
-      prisma.publishJob.findMany({
-        take: 10,
-        orderBy: { createdAt: "desc" },
-        include: {
-          variant: {
-            select: {
-              surface: true,
-              body: true,
-              account: { select: { platform: true, displayName: true } },
-            },
-          },
-        },
-      }),
+      db.socialAccount.findMany(),
+      db.publishJob.findMany({ take: 10 }),
     ]);
     return { ok: true as const, accounts, jobs };
   } catch (err) {
@@ -72,14 +52,34 @@ async function loadData() {
 }
 
 export default async function Home() {
+  const session = await auth();
+  if (!session?.user?.id) redirect("/login"); // middleware 已擋，這裡是保險
+  const db = getScopedDb(session.user.id);
+
+  async function logout() {
+    "use server";
+    await signOut({ redirectTo: "/login" });
+  }
+
   const registered = new Set<Platform>(registeredPlatforms());
-  const data = await loadData();
+  const data = await loadData(db);
 
   return (
     <div className="min-h-screen bg-zinc-50 text-zinc-900 dark:bg-zinc-950 dark:text-zinc-100">
       <main className="mx-auto max-w-3xl px-6 py-12 flex flex-col gap-8">
         <header>
-          <h1 className="text-2xl font-bold">contenthub</h1>
+          <div className="flex items-start justify-between gap-4">
+            <h1 className="text-2xl font-bold">contenthub</h1>
+            <form action={logout} className="flex items-center gap-3 text-xs text-zinc-500">
+              <span>{session.user.email}</span>
+              <button
+                type="submit"
+                className="rounded border border-zinc-300 px-2 py-1 hover:bg-zinc-100 dark:border-zinc-700 dark:hover:bg-zinc-800"
+              >
+                登出
+              </button>
+            </form>
+          </div>
           <p className="mt-1 text-sm text-zinc-500 dark:text-zinc-400">
             多平台社群內容發布系統 — 一次撰寫 → 各平台變體 → 預檢 → 排程 → 分發
           </p>

@@ -41,11 +41,14 @@ npx prisma dev -d -n content-hub --port 51213   # 啟動本地 Postgres
 npx prisma migrate deploy                        # 套用 migration
 
 # 2. 設定 .env（參考 .env.example）
-#    ENCRYPTION_KEY：node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
+#    ENCRYPTION_KEY / AUTH_SECRET 產生方式見 .env.example 註解
 
 # 3. 測試與啟動
-npm test          # vitest（含 adapter 合約測試）
+npm test          # vitest（合約測試 + 租戶隔離測試）
 npm run dev
+
+# 4. 登入：開 http://localhost:3000 會導向 /login，輸入 email 後
+#    magic link 會輸出在 dev server 的 console（dev 未接郵件服務），點連結完成登入
 ```
 
 注意：使用 `prisma dev` 本地資料庫時，DATABASE_URL 需帶 `pgbouncer=true`（它的 TCP 端點是 transaction-mode 代理），`.env.example` 有範例。
@@ -75,6 +78,15 @@ npm run dev
 回應狀態：`201` 發布成功、`422` 預檢失敗（`validation` 內有逐項中文訊息）、`502` 平台端失敗（`job.errorCode` / `errorMessage` 為正規化錯誤）。
 
 規格 §8 的其餘路由（`/api/content`、`/api/schedule`、cron dispatcher、OAuth 連結流程）屬後續 Sprint。
+
+## 多租戶與認證（Sprint 0 追加）
+
+- **認證**：Auth.js v5 email magic link（JWT session，`session.user.id` 一律有值）。middleware 保護所有頁面（302 → `/login`）與 `/api/*`（401 JSON）；只放行 `/login` 與 `/api/auth/*`。
+- **租戶隔離**：[scoped.ts](src/lib/db/scoped.ts) 的 `getScopedDb(userId)` 是 route / 頁面存取資料的**唯一入口**，所有查詢自動注入 userId；`Variant` / `PublishJob` 不存 userId，經 parent 關聯（`contentPiece.userId`）過濾。ESLint 規則擋下 `src/app/**` 直接 import prisma、以及任何地方（`src/lib/db/` 以外）new PrismaClient。
+- **冪等 key 租戶前綴**：`idempotencyKey` 全域唯一但 job 不存 userId，client 自訂 key 一律以 `u:{userId}:` 前綴存放，避免跨租戶碰撞與資訊洩漏（`tenantIdempotencyKey()`）。
+- **OAuth state**：[state.ts](src/lib/oauth/state.ts) 的 `signOAuthState / verifyOAuthState`（HMAC-SHA256 + 過期 + nonce）。未來平台 OAuth 流程的 callback **只信 state 內簽章的 userId**，不信 session。
+- **隔離測試**：[scoped.test.ts](src/lib/db/__tests__/scoped.test.ts) 驗證 A 的身分取不到 B 的任何資料，且同一個平台帳號可被不同 user 各自連結。
+- **同一個粉專多人連結**：`SocialAccount` 唯一鍵為 `[userId, platform, platformAccountId]`。
 
 ## 架構速覽
 

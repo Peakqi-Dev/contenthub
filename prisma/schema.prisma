@@ -7,11 +7,38 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
+// ============ 租戶 ============
+
+model User {
+  id            String    @id @default(cuid())
+  email         String    @unique
+  name          String?
+  image         String? // Auth.js adapter 需要
+  emailVerified DateTime? // Auth.js magic link 需要
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  socialAccounts SocialAccount[]
+  contentPieces  ContentPiece[]
+  mediaAssets    MediaAsset[]
+  generationRuns GenerationRun[]
+}
+
+// Auth.js magic link 的驗證 token（session 走 JWT，不需要 Session/Account model）
+model VerificationToken {
+  identifier String
+  token      String
+  expires    DateTime
+
+  @@id([identifier, token])
+}
+
 // ============ 帳號與憑證 ============
 
 model SocialAccount {
   id                String      @id @default(cuid())
-  userId            String      @default("local") // 多租戶預留：目前固定 "local"（規格 §13）
+  userId            String
+  user              User        @relation(fields: [userId], references: [id])
   platform          Platform
   publishTier       PublishTier
   displayName       String // "Allen 的粉專"
@@ -28,13 +55,17 @@ model SocialAccount {
   createdAt         DateTime    @default(now())
   updatedAt         DateTime    @updatedAt
 
-  @@unique([platform, platformAccountId])
+  // 同一個粉專可被不同 user 各自連結，不能全域唯一（規格追加 §1）
+  @@unique([userId, platform, platformAccountId])
+  @@index([userId])
 }
 
 // ============ 內容 ============
 
 model ContentPiece {
   id           String          @id @default(cuid())
+  userId       String
+  user         User            @relation(fields: [userId], references: [id])
   title        String
   sourceText   String          @db.Text // 原始輸入（作者寫的）
   canonicalUrl String? // 自家站點的正式連結
@@ -46,6 +77,8 @@ model ContentPiece {
   generations  GenerationRun[]
   createdAt    DateTime        @default(now())
   updatedAt    DateTime        @updatedAt
+
+  @@index([userId])
 }
 
 model Variant {
@@ -72,6 +105,8 @@ model Variant {
 
 model MediaAsset {
   id              String        @id @default(cuid())
+  userId          String
+  user            User          @relation(fields: [userId], references: [id])
   contentPieceId  String?
   contentPiece    ContentPiece? @relation(fields: [contentPieceId], references: [id])
   kind            MediaKind // IMAGE / VIDEO / AUDIO
@@ -85,6 +120,8 @@ model MediaAsset {
   source          AssetSource // UPLOAD / AI_GENERATED
   generationRunId String?
   createdAt       DateTime      @default(now())
+
+  @@index([userId])
 }
 
 // ============ 發布任務 ============
@@ -118,6 +155,8 @@ model PublishJob {
 
 model GenerationRun {
   id             String        @id @default(cuid())
+  userId         String
+  user           User          @relation(fields: [userId], references: [id])
   contentPieceId String?
   contentPiece   ContentPiece? @relation(fields: [contentPieceId], references: [id])
   modality       Modality // TEXT / IMAGE / VIDEO
@@ -130,6 +169,8 @@ model GenerationRun {
   status         String // OK / FAILED
   errorMessage   String?       @db.Text
   createdAt      DateTime      @default(now())
+
+  @@index([userId])
 }
 
 // ============ 列舉 ============
